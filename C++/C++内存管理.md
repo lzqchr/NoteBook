@@ -133,4 +133,96 @@ newhandler 函数 一般用来申请更多内存或者（跳出循环，终止�
 ![alt text](image-33.png)
 ![alt text](image-34.png)
 
-## std::allocator
+## std::allocator 解析
+### 图解总览
+![alt text](image-35.png)
+总体结构 使用16个链表管理不同大小数据，第一次构建一个容器都会先申请一个大小为（20*size*2 + 额外 ）的 使用malloc分配的内存，前20个用于存储数据，后20个用于作为Pool用来给之后的数据使用。因为只使用一次malloc比直接malloc少了很多cookie产生。
+#### embedded pointers（嵌入式指针）
+![alt text](image-36.png)
+#### 第一次申请
+![alt text](image-37.png)
+#### 第二次申请（pool使用完）
+![alt text](image-39.png)
+#### 三次申请（poll=空 重新malloc）
+![alt text](image-40.png)
+#### 第四次（pool还有余量）
+![alt text](image-41.png)
+对pool分配20个88内存（如果够20个不够就不到20个）
+#### 第五次（pool 不够分配 一个申请量）
+![alt text](image-42.png)
+pool还有但是不够分配一个申请量，剩余的pool变为碎片内存，根据大小给其他大小给到#9指针
+#### 内存不够malloc情况
+![alt text](image-43.png)
+![alt text](image-44.png)
+把pool内存根据大小给到#2指针，然后往右边寻找最近可以提供内存的指针#9（之前内存碎片归属地但是里面没有一个#9大小成员）使用#9指针内存然后自动处理内存碎片
+#### 内存不够 并且没有能回填pool的时候
+![alt text](image-45.png)
+报错，使用后白色为使用的内存技术难度过高，对操作系统剩余内存接着申请对于多线程系统会带来灾难
+### G2.9 std::alloc 源码
+#### 一级分配器（先调用二级 二级失败调用一级 一级不是很重要）
+![alt text](image-46.png)
+![alt text](image-47.png)
+![alt text](image-48.png)
+#### 二级分配器
+![alt text](image-49.png)
+#### allocate 方法
+![alt text](image-50.png)
+![alt text](image-51.png)
+#### deallocate方法
+![alt text](image-52.png)
+回收链表但是不free内存
+#### refill 方法
+![alt text](image-53.png)
+就是用chunk_alloc申请内存然后处理嵌入式指针
+#### chunk_alloc 方法
+![alt text](image-54.png)
+
+![alt text](image-55.png)
+先考虑pool是否够申请20个，或者是否够申请1个以上，如果够就正常处理，剩下还是pool。不满足一个就处理碎片，当处理好碎片就malloc新内存（pool已经空），分配好的内存当作POOl然后递归调用chunk_alloc.
+## maloc/free
+### VC6 maloc
+![alt text](image-56.png)
+SBH:Small Block Heap
+小于一定值就是用sbh处理，大于就直接操作系统申请内存。
+### VC10 maloc
+![alt text](image-57.png)
+无论多大都让操作系统处理（其实操作系统也有SBH所以自己就不写了）
+### heap_init() 和sbh_init()
+![alt text](image-58.png)
+向操作系统申请 4096大小空间，_crtheap管理，然后再使用heap_alloc 从_crtheap中申请内存,16个header.
+![alt text](image-59.png)
+01111是bitvCommit，0000是两个vitvEntryHi，Lo，还有两个指针，这就是一个header。
+#### 总览
+![alt text](image-60.png)
+### _ioinit()
+![alt text](image-61.png)
+第一块内存申请，debug模式会有额外内存申请
+### _heap_alloc_dbg()
+![alt text](image-62.png)
+调整大小填充debug信息cookies没写入
+![alt text](image-63.png)
+### _heap_alloc_base()
+![alt text](image-64.png)
+判断大小,小就让sbh处理,大就让操作系统处理。
+### _heap_alloc_bloc()
+![alt text](image-65.png)
+单纯加上cookies内存然后对齐。按照16位对齐看最后一个数是否为1判断在不在掌握中。
+### _sbh_alloc_new_region()
+![alt text](image-66.png)
+一个_sbh_header会申请一个虚拟内存并且使用 regin来管理分配内存,32GROUP，一个GROUP有64个双向指针来控制内存。
+### _sbh_alloc_new_group()
+![alt text](image-67.png)
+通过32个group 每个group管理64个list_head 用list_head管理8个pages
+![alt text](image-68.png)
+#### 切割
+![alt text](image-69.png)
+类似的 不同大小的片段用不同的list_head管理
+#### 首次分配
+![alt text](image-70.png)
+按照（内存/16）-1 个list管理，其中内存用virtualAlloc获得，先获得逻辑内存物理内存不一定分配（就是对饮32个group）其中每一个group也用virtualalloc获得真正内存(八个一个page4k 一共32k)，对于分配内存16位最后一位变为1代表给出去，脱离sbh控制。申请130内存，region中有一个数组表示group是否挂在内存。
+#### 二次分配
+![alt text](image-71.png)
+分配240 先查询（内存/16）-1 的group有没有内存没有就网上找大的，找到最后一个gp，分配。其中contEntnes表示放出去内存的次数。
+#### 归还
+![alt text](image-72.png)
+归还 240，先240h/16h = 36h归还到35list，把内存中cookies最后一位改为0，把35号list 改为1
